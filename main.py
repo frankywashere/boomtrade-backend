@@ -1,5 +1,6 @@
 import os
 import time
+import subprocess
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -22,6 +23,7 @@ app.add_middleware(
 # Global state
 gateway_ready = False
 stored_credentials = {}
+ibeam_process = None
 
 class Credentials(BaseModel):
     username: str
@@ -64,7 +66,7 @@ async def health():
 
 @app.post("/gateway/start")
 async def start_gateway(credentials: Credentials):
-    global gateway_ready, stored_credentials
+    global gateway_ready, stored_credentials, ibeam_process
     
     print(f"=== GATEWAY START REQUEST ===")
     print(f"Username: {credentials.username}")
@@ -74,41 +76,81 @@ async def start_gateway(credentials: Credentials):
     # Store credentials
     stored_credentials = credentials.dict()
     
-    # Try to authenticate with IBeam if it's running
+    # Try to start IBeam with user credentials
     try:
-        async with httpx.AsyncClient(verify=False, timeout=10.0) as client:
-            # First check if gateway is alive
-            status_response = await client.get("http://localhost:5000/v1/api/iserver/auth/status")
-            print(f"Gateway status check: {status_response.status_code}")
+        import subprocess
+        
+        # Kill any existing IBeam process
+        if 'ibeam_process' in globals() and ibeam_process:
+            try:
+                ibeam_process.terminate()
+                await asyncio.sleep(1)
+            except:
+                pass
+        
+        # Set environment variables for IBeam
+        env = os.environ.copy()
+        env['IBEAM_ACCOUNT'] = credentials.username
+        env['IBEAM_PASSWORD'] = credentials.password
+        
+        print("Starting IBeam with user credentials...")
+        
+        # Start IBeam process
+        ibeam_process = subprocess.Popen(
+            ["python3", "-c", """
+import os
+from ibeam import IBeam
+print('Starting IBeam with account:', os.environ.get('IBEAM_ACCOUNT'))
+ib = IBeam(
+    account=os.environ.get('IBEAM_ACCOUNT'),
+    password=os.environ.get('IBEAM_PASSWORD'),
+    gateway_dir='/tmp/gateway',
+    cache_dir='/tmp/cache'
+)
+ib.start_and_authenticate()
+"""],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        
+        # Wait for IBeam to start (max 90 seconds)
+        print("Waiting for IBeam to authenticate...")
+        for i in range(90):
+            await asyncio.sleep(1)
             
-            if status_response.status_code == 200:
-                # Try to authenticate
-                auth_data = {
-                    "username": credentials.username,
-                    "password": credentials.password
-                }
-                
-                auth_response = await client.post(
-                    "http://localhost:5000/v1/api/iserver/auth/ssodh/init",
-                    json=auth_data
-                )
-                
-                if auth_response.status_code == 200:
-                    gateway_ready = True
-                    print("✅ IBeam authentication successful")
-                    return {
-                        "status": "ready",
-                        "message": "Connected to IBKR via IBeam"
-                    }
+            # Check if IBeam gateway is responding
+            try:
+                async with httpx.AsyncClient(verify=False, timeout=2.0) as client:
+                    response = await client.get("http://localhost:5000/v1/api/iserver/auth/status")
+                    if response.status_code == 200:
+                        data = response.json()
+                        if data.get("authenticated"):
+                            gateway_ready = True
+                            print("✅ IBeam authentication successful")
+                            return {
+                                "status": "ready",
+                                "message": "Connected to IBKR successfully"
+                            }
+            except:
+                pass
+            
+            if i % 10 == 0:
+                print(f"Still waiting... {i}/90 seconds")
+        
+        print("IBeam authentication timed out")
+        
     except Exception as e:
-        print(f"IBeam connection failed: {e}")
+        print(f"Error starting IBeam: {e}")
+        import traceback
+        traceback.print_exc()
     
-    # Fallback: Just mark as ready for testing
+    # Fallback: Use simulation mode
     gateway_ready = True
     print("⚠️ Using simulation mode")
     return {
         "status": "ready",
-        "message": "Running in simulation mode - IBeam connection pending"
+        "message": "Running in simulation mode - IBeam startup failed"
     }
 
 @app.get("/account")
