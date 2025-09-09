@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y \
     chromium \
     chromium-driver \
     git \
-    openjdk-17-jre-headless \
+    openjdk-21-jre-headless \
     supervisor \
     && rm -rf /var/lib/apt/lists/*
 
