@@ -1,6 +1,9 @@
 # Use official IBeam image directly
 FROM voyz/ibeam:latest
 
+# Switch to root to install dependencies
+USER root
+
 # Install Python and our app dependencies
 RUN apt-get update && apt-get install -y \
     python3 \
