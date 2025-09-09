@@ -1,35 +1,30 @@
-FROM voyz/ibeam:latest AS ibeam
+# Use official IBeam image directly
+FROM voyz/ibeam:latest
 
-FROM python:3.11-slim
-
-# Copy IBeam from the official image
-COPY --from=ibeam /srv/ibeam /srv/ibeam
-
-# Install dependencies
+# Install Python and our app dependencies
 RUN apt-get update && apt-get install -y \
-    openjdk-21-jre-headless \
-    chromium \
-    chromium-driver \
-    wget \
-    curl \
+    python3 \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# Set working directory
 WORKDIR /app
+
+# Copy requirements and install
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install ibeam
+RUN pip3 install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY . .
 
-# Create directories for IBeam
-RUN mkdir -p /tmp/clientportal /root/ibeam
+# Environment variables for IBeam
+ENV IBEAM_GATEWAY_DIR=/srv/clientportal.gw
+ENV IBEAM_LOG_LEVEL=INFO
+ENV IBEAM_MAINTENANCE_INTERVAL=86400
+ENV IBEAM_SPAWN_NEW_PROCESSES=false
 
 # Expose ports
 EXPOSE 8000 5000
 
-# Start script
-RUN chmod +x start.sh
-
-CMD ["./start.sh"]
+# Start both IBeam and our FastAPI
+CMD python3 main.py
