@@ -95,29 +95,65 @@ async def start_gateway(credentials: Credentials):
         
         print("Starting IBeam with user credentials...")
         
-        # Start IBeam process
-        ibeam_process = subprocess.Popen(
-            ["python3", "-c", """
+        # Start IBeam process with better error handling
+        ibeam_script = """
 import os
-from ibeam import IBeam
-print('Starting IBeam with account:', os.environ.get('IBEAM_ACCOUNT'))
-ib = IBeam(
-    account=os.environ.get('IBEAM_ACCOUNT'),
-    password=os.environ.get('IBEAM_PASSWORD'),
-    gateway_dir='/tmp/gateway',
-    cache_dir='/tmp/cache'
-)
-ib.start_and_authenticate()
-"""],
+import sys
+import traceback
+
+try:
+    from ibeam import IBeam
+    print('Starting IBeam with account:', os.environ.get('IBEAM_ACCOUNT'))
+    ib = IBeam(
+        account=os.environ.get('IBEAM_ACCOUNT'),
+        password=os.environ.get('IBEAM_PASSWORD'),
+        gateway_dir='/tmp/gateway',
+        cache_dir='/tmp/cache'
+    )
+    ib.start_and_authenticate()
+    # Keep process running
+    import time
+    while True:
+        time.sleep(10)
+except Exception as e:
+    print(f'IBeam error: {e}')
+    traceback.print_exc()
+    sys.exit(1)
+"""
+        
+        ibeam_process = subprocess.Popen(
+            ["python3", "-c", ibeam_script],
             env=env,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+            stderr=subprocess.STDOUT
         )
         
         # Wait for IBeam to start (max 90 seconds)
         print("Waiting for IBeam to authenticate...")
+        
+        # Start a background task to read IBeam output
+        async def read_output():
+            try:
+                while True:
+                    line = await asyncio.get_event_loop().run_in_executor(
+                        None, ibeam_process.stdout.readline
+                    )
+                    if line:
+                        print(f"IBeam: {line.decode().strip()}")
+                    else:
+                        break
+            except:
+                pass
+        
+        asyncio.create_task(read_output())
+        
         for i in range(90):
             await asyncio.sleep(1)
+            
+            # Check if process died
+            if ibeam_process.poll() is not None:
+                print(f"IBeam process exited with code: {ibeam_process.returncode}")
+                break
             
             # Check if IBeam gateway is responding
             try:
