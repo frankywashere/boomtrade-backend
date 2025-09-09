@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 # Install Java for IBeam
 RUN apt-get update && apt-get install -y \
-    openjdk-17-jre-headless \
+    openjdk-21-jre-headless \
     wget \
     unzip \
     && rm -rf /var/lib/apt/lists/*
