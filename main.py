@@ -106,12 +106,38 @@ IBEAM_PASSWORD={credentials.password}
         # Launch IBeam
         print("Launching IBeam process...")
         try:
-            gateway_process = subprocess.Popen(
-                ["python", "-m", "ibeam", "gateway", "start", "--config", "ibeam_config.yml"],
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            )
+            # Try different ways to start IBeam
+            commands_to_try = [
+                ["ibeam", "gateway", "start"],  # Direct command
+                ["python3", "-m", "ibeam", "gateway", "start"],  # Python3 module
+                ["/opt/venv/bin/ibeam", "gateway", "start"],  # Full path
+            ]
+            
+            gateway_process = None
+            for cmd in commands_to_try:
+                try:
+                    print(f"Trying command: {' '.join(cmd)}")
+                    gateway_process = subprocess.Popen(
+                        cmd + ["--config", "ibeam_config.yml"],
+                        env=env,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE
+                    )
+                    # Check if it started
+                    time.sleep(0.5)
+                    if gateway_process.poll() is None:
+                        print(f"Success with command: {' '.join(cmd)}")
+                        break
+                    else:
+                        stdout, stderr = gateway_process.communicate()
+                        print(f"Failed: {stderr.decode()}")
+                        gateway_process = None
+                except Exception as e:
+                    print(f"Command failed: {e}")
+                    continue
+            
+            if gateway_process is None:
+                raise Exception("Could not start IBeam with any command")
             print(f"IBeam process started with PID: {gateway_process.pid}")
             
             # Check if process started successfully
