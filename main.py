@@ -79,7 +79,10 @@ async def start_gateway(credentials: Credentials):
     global gateway_process, gateway_ready
     
     try:
-        print(f"Starting IBeam gateway for user: {credentials.username}")
+        print(f"=== GATEWAY START REQUEST ===")
+        print(f"Username: {credentials.username}")
+        print(f"Account: {credentials.account}")
+        print(f"Timestamp: {datetime.now()}")
         
         # Write credentials to environment file for IBeam
         env_content = f"""IBEAM_ACCOUNT={credentials.username}
@@ -101,6 +104,7 @@ IBEAM_PASSWORD={credentials.password}
         })
         
         # Launch IBeam
+        print("Launching IBeam process...")
         gateway_process = subprocess.Popen(
             ["python", "-m", "ibeam", "gateway", "start", "--config", "ibeam_config.yml"],
             env=env,
@@ -108,6 +112,7 @@ IBEAM_PASSWORD={credentials.password}
             stderr=subprocess.PIPE
         )
         
+        print(f"IBeam process started with PID: {gateway_process.pid}")
         print("Waiting for gateway to initialize...")
         
         # Wait for gateway to be ready
