@@ -12,8 +12,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Download and setup IBeam
-RUN pip install ibeam
+# IBeam will be configured later
+# For now we'll run in simulation mode
 
 # Copy application code
 COPY . .
