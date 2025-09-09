@@ -27,7 +27,7 @@ COPY . .
 # Make scripts executable
 RUN chmod +x run_ibeam.py
 
-# Create supervisor config
+# Create supervisor config (environment vars will be inherited from Docker)
 RUN echo '[supervisord]\n\
 nodaemon=true\n\
 logfile=/tmp/supervisord.log\n\
@@ -38,7 +38,6 @@ autostart=true\n\
 autorestart=true\n\
 stderr_logfile=/tmp/ibeam.err.log\n\
 stdout_logfile=/tmp/ibeam.out.log\n\
-environment=IBEAM_ACCOUNT="%(ENV_IBEAM_ACCOUNT)s",IBEAM_PASSWORD="%(ENV_IBEAM_PASSWORD)s"\n\
 \n\
 [program:fastapi]\n\
 command=python3 /app/main.py\n\
