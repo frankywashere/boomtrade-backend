@@ -9,23 +9,17 @@ from typing import Optional, Dict, Any, List
 import httpx
 import json
 from datetime import datetime
+from contextlib import asynccontextmanager
 
-app = FastAPI()
-
-# CORS for Swift app
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Environment variables
+IBKR_USERNAME = os.getenv("IBKR_USERNAME", "")
+IBKR_PASSWORD = os.getenv("IBKR_PASSWORD", "")
+IBKR_ACCOUNT = os.getenv("IBKR_ACCOUNT", "")
 
 # Global state
 gateway_process = None
 gateway_ready = False
-ibeam_url = "https://localhost:5000/v1/api"
-session_data = {}
+ibeam_gateway_url = "https://localhost:5000"
 
 class Credentials(BaseModel):
     username: str
@@ -51,10 +45,28 @@ class OptionOrder(BaseModel):
     side: str
     limit_price: Optional[float] = None
 
-# Startup event
-@app.on_event("startup")
-async def startup_event():
-    print("FastAPI server started. IBeam will start on first request.")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    print("FastAPI server starting...")
+    yield
+    # Shutdown
+    global gateway_process
+    if gateway_process:
+        print("Shutting down gateway...")
+        gateway_process.terminate()
+        gateway_process.wait()
+
+app = FastAPI(lifespan=lifespan)
+
+# CORS for Swift app
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Health check
 @app.get("/health")
@@ -64,30 +76,69 @@ async def health():
 # Start IBeam gateway
 @app.post("/gateway/start")
 async def start_gateway(credentials: Credentials):
-    global gateway_process, gateway_ready, session_data
+    global gateway_process, gateway_ready
     
     try:
-        # Store credentials for IBeam
-        session_data = {
-            "username": credentials.username,
-            "password": credentials.password,
-            "account": credentials.account
-        }
+        print(f"Starting IBeam gateway for user: {credentials.username}")
         
-        # For now, just simulate gateway startup since IBeam installation needs fixing
-        # In production, this would actually start the IBeam gateway
-        print(f"Gateway start requested for user: {credentials.username}")
+        # Write credentials to environment file for IBeam
+        env_content = f"""IBEAM_ACCOUNT={credentials.username}
+IBEAM_PASSWORD={credentials.password}
+"""
+        if credentials.account:
+            env_content += f"IBEAM_TRADING_MODE=paper\n"
         
-        # Simulate gateway startup delay
-        await asyncio.sleep(2)
+        with open("/tmp/ibeam.env", "w") as f:
+            f.write(env_content)
         
-        # Mark as ready for testing
-        gateway_ready = True
+        # Start IBeam process
+        env = os.environ.copy()
+        env.update({
+            "IBEAM_ACCOUNT": credentials.username,
+            "IBEAM_PASSWORD": credentials.password,
+            "IBEAM_GATEWAY_DIR": "/tmp/clientportal",
+            "IBEAM_LOG_LEVEL": "INFO"
+        })
         
-        return {
-            "status": "ready", 
-            "message": "Gateway simulation started (IBeam integration pending)"
-        }
+        # Launch IBeam
+        gateway_process = subprocess.Popen(
+            ["python", "-m", "ibeam", "gateway", "start", "--config", "ibeam_config.yml"],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        
+        print("Waiting for gateway to initialize...")
+        
+        # Wait for gateway to be ready
+        max_attempts = 90  # 90 * 2 = 180 seconds max
+        for i in range(max_attempts):
+            try:
+                async with httpx.AsyncClient(verify=False, timeout=5.0) as client:
+                    # Try to hit the gateway status endpoint
+                    response = await client.get(f"{ibeam_gateway_url}/v1/api/iserver/auth/status")
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        print(f"Gateway response: {data}")
+                        
+                        # Check if authenticated
+                        if data.get("authenticated", False):
+                            gateway_ready = True
+                            print("Gateway is ready and authenticated!")
+                            return {"status": "ready", "message": "Gateway started successfully"}
+                        elif data.get("competing", False):
+                            return {"status": "error", "message": "Another session is active. Please logout from other sessions."}
+                        else:
+                            print(f"Gateway not yet authenticated, attempt {i+1}/{max_attempts}")
+                    else:
+                        print(f"Gateway returned status {response.status_code}, attempt {i+1}/{max_attempts}")
+            except Exception as e:
+                print(f"Gateway not responding yet ({i+1}/{max_attempts}): {str(e)}")
+            
+            await asyncio.sleep(2)
+        
+        return {"status": "timeout", "message": "Gateway startup timeout. Please check your credentials."}
         
     except Exception as e:
         print(f"Gateway start error: {str(e)}")
@@ -100,7 +151,7 @@ async def get_account():
         raise HTTPException(status_code=503, detail="Gateway not ready")
     
     async with httpx.AsyncClient(verify=False) as client:
-        response = await client.get(f"{ibeam_url}/iserver/accounts")
+        response = await client.get(f"{ibeam_gateway_url}/v1/api/portfolio/accounts")
         return response.json()
 
 # Get positions
@@ -110,8 +161,15 @@ async def get_positions():
         raise HTTPException(status_code=503, detail="Gateway not ready")
     
     async with httpx.AsyncClient(verify=False) as client:
-        response = await client.get(f"{ibeam_url}/iserver/positions")
-        return response.json()
+        # Get accounts first
+        accounts_resp = await client.get(f"{ibeam_gateway_url}/v1/api/portfolio/accounts")
+        accounts = accounts_resp.json()
+        
+        if accounts:
+            account_id = accounts[0]["accountId"]
+            response = await client.get(f"{ibeam_gateway_url}/v1/api/portfolio/{account_id}/positions/0")
+            return response.json()
+        return []
 
 # Search for option contracts
 @app.get("/options/search/{symbol}")
@@ -120,18 +178,22 @@ async def search_options(symbol: str):
         raise HTTPException(status_code=503, detail="Gateway not ready")
     
     async with httpx.AsyncClient(verify=False) as client:
-        # Get contract ID for underlying
-        search = await client.get(f"{ibeam_url}/iserver/secdef/search", params={"symbol": symbol})
-        contracts = search.json()
+        # Search for symbol
+        search_resp = await client.get(
+            f"{ibeam_gateway_url}/v1/api/iserver/secdef/search",
+            params={"symbol": symbol}
+        )
+        results = search_resp.json()
         
-        if not contracts:
-            raise HTTPException(status_code=404, detail="Symbol not found")
-        
-        conid = contracts[0]["conid"]
-        
-        # Get option chains
-        chains = await client.get(f"{ibeam_url}/iserver/secdef/option-chains", params={"conid": conid})
-        return chains.json()
+        if results:
+            conid = results[0]["conid"]
+            # Get option chains
+            chains_resp = await client.get(
+                f"{ibeam_gateway_url}/v1/api/iserver/secdef/option-chains",
+                params={"conid": conid}
+            )
+            return chains_resp.json()
+        return []
 
 # Get option chain
 @app.get("/options/chain/{symbol}/{expiry}")
@@ -140,21 +202,22 @@ async def get_option_chain(symbol: str, expiry: str):
         raise HTTPException(status_code=503, detail="Gateway not ready")
     
     async with httpx.AsyncClient(verify=False) as client:
-        # Implementation for specific expiry chain
-        search = await client.get(f"{ibeam_url}/iserver/secdef/search", params={"symbol": symbol})
-        contracts = search.json()
-        
-        if not contracts:
-            raise HTTPException(status_code=404, detail="Symbol not found")
-        
-        conid = contracts[0]["conid"]
-        
-        # Get strikes for expiry
-        strikes = await client.get(
-            f"{ibeam_url}/iserver/secdef/strikes",
-            params={"conid": conid, "expiry": expiry}
+        # Search for symbol
+        search_resp = await client.get(
+            f"{ibeam_gateway_url}/v1/api/iserver/secdef/search",
+            params={"symbol": symbol}
         )
-        return strikes.json()
+        results = search_resp.json()
+        
+        if results:
+            conid = results[0]["conid"]
+            # Get strikes for expiry
+            strikes_resp = await client.get(
+                f"{ibeam_gateway_url}/v1/api/iserver/secdef/strikes",
+                params={"conid": conid, "expiry": expiry}
+            )
+            return strikes_resp.json()
+        return []
 
 # Place stock order
 @app.post("/order/stock")
@@ -163,18 +226,26 @@ async def place_stock_order(order: Order):
         raise HTTPException(status_code=503, detail="Gateway not ready")
     
     async with httpx.AsyncClient(verify=False) as client:
-        # Get account ID
-        accounts = await client.get(f"{ibeam_url}/iserver/accounts")
-        account_id = accounts.json()[0]
+        # Get accounts
+        accounts_resp = await client.get(f"{ibeam_gateway_url}/v1/api/portfolio/accounts")
+        accounts = accounts_resp.json()
+        
+        if not accounts:
+            raise HTTPException(status_code=404, detail="No accounts found")
+        
+        account_id = accounts[0]["accountId"]
         
         # Search for contract
-        search = await client.get(f"{ibeam_url}/iserver/secdef/search", params={"symbol": order.symbol})
-        contracts = search.json()
+        search_resp = await client.get(
+            f"{ibeam_gateway_url}/v1/api/iserver/secdef/search",
+            params={"symbol": order.symbol}
+        )
+        results = search_resp.json()
         
-        if not contracts:
+        if not results:
             raise HTTPException(status_code=404, detail="Symbol not found")
         
-        conid = contracts[0]["conid"]
+        conid = results[0]["conid"]
         
         # Build order
         order_data = {
@@ -193,7 +264,7 @@ async def place_stock_order(order: Order):
         
         # Place order
         response = await client.post(
-            f"{ibeam_url}/iserver/account/{account_id}/orders",
+            f"{ibeam_gateway_url}/v1/api/iserver/account/{account_id}/orders",
             json={"orders": [order_data]}
         )
         
@@ -206,21 +277,29 @@ async def place_option_order(order: OptionOrder):
         raise HTTPException(status_code=503, detail="Gateway not ready")
     
     async with httpx.AsyncClient(verify=False) as client:
-        # Get account ID
-        accounts = await client.get(f"{ibeam_url}/iserver/accounts")
-        account_id = accounts.json()[0]
+        # Get accounts
+        accounts_resp = await client.get(f"{ibeam_gateway_url}/v1/api/portfolio/accounts")
+        accounts = accounts_resp.json()
         
-        # Build option symbol (e.g., "AAPL 20240115 C 150")
+        if not accounts:
+            raise HTTPException(status_code=404, detail="No accounts found")
+        
+        account_id = accounts[0]["accountId"]
+        
+        # Build option symbol
         option_symbol = f"{order.symbol} {order.expiry} {order.right} {order.strike}"
         
         # Search for option contract
-        search = await client.get(f"{ibeam_url}/iserver/secdef/search", params={"symbol": option_symbol})
-        contracts = search.json()
+        search_resp = await client.get(
+            f"{ibeam_gateway_url}/v1/api/iserver/secdef/search",
+            params={"symbol": option_symbol}
+        )
+        results = search_resp.json()
         
-        if not contracts:
+        if not results:
             raise HTTPException(status_code=404, detail="Option contract not found")
         
-        conid = contracts[0]["conid"]
+        conid = results[0]["conid"]
         
         # Build order
         order_data = {
@@ -237,7 +316,7 @@ async def place_option_order(order: OptionOrder):
         
         # Place order
         response = await client.post(
-            f"{ibeam_url}/iserver/account/{account_id}/orders",
+            f"{ibeam_gateway_url}/v1/api/iserver/account/{account_id}/orders",
             json={"orders": [order_data]}
         )
         
@@ -251,17 +330,20 @@ async def get_market_data(symbol: str):
     
     async with httpx.AsyncClient(verify=False) as client:
         # Search for contract
-        search = await client.get(f"{ibeam_url}/iserver/secdef/search", params={"symbol": symbol})
-        contracts = search.json()
+        search_resp = await client.get(
+            f"{ibeam_gateway_url}/v1/api/iserver/secdef/search",
+            params={"symbol": symbol}
+        )
+        results = search_resp.json()
         
-        if not contracts:
+        if not results:
             raise HTTPException(status_code=404, detail="Symbol not found")
         
-        conid = contracts[0]["conid"]
+        conid = results[0]["conid"]
         
         # Get market data
         response = await client.get(
-            f"{ibeam_url}/iserver/marketdata/snapshot",
+            f"{ibeam_gateway_url}/v1/api/iserver/marketdata/snapshot",
             params={"conids": conid, "fields": "31,84,85,86,87,88"}
         )
         
@@ -289,14 +371,6 @@ async def websocket_market_data(websocket: WebSocket):
         print(f"WebSocket error: {e}")
     finally:
         await websocket.close()
-
-# Shutdown gateway on exit
-@app.on_event("shutdown")
-async def shutdown_event():
-    global gateway_process
-    if gateway_process:
-        gateway_process.terminate()
-        gateway_process.wait()
 
 if __name__ == "__main__":
     import uvicorn
