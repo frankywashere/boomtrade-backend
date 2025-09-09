@@ -1,31 +1,32 @@
-# Use the official IBeam image as base
-FROM voyz/ibeam:0.5.0
-
-# Install Python for our FastAPI app
-USER root
-RUN apt-get update && apt-get install -y python3 python3-pip && rm -rf /var/lib/apt/lists/*
+FROM python:3.11-slim
 
 WORKDIR /app
 
+# Install system dependencies including Chromium for IBeam
+RUN apt-get update && apt-get install -y \
+    wget \
+    curl \
+    chromium \
+    chromium-driver \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy and install Python requirements
 COPY requirements.txt .
-RUN pip3 install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy our application
+# Verify IBeam installation
+RUN python3 -c "import ibeam; print('IBeam installed at:', ibeam.__file__)"
+
+# Copy application code
 COPY . .
 
-# Script to run both IBeam and our API
-RUN echo '#!/bin/bash\n\
-# Start IBeam in background\n\
-python3 -m ibeam.gateway_starter &\n\
-IBEAM_PID=$!\n\
-echo "IBeam started with PID $IBEAM_PID"\n\
-# Wait a bit for IBeam to initialize\n\
-sleep 5\n\
-# Start our FastAPI app\n\
-python3 main_with_ibeam.py\n\
-' > /app/start_both.sh && chmod +x /app/start_both.sh
+# Make test script executable
+RUN chmod +x test_ibeam.py
 
-EXPOSE 8000 5000
+# Test IBeam on build
+RUN python3 test_ibeam.py || true
 
-CMD ["/app/start_both.sh"]
+EXPOSE 8000
+
+# For now, run the test to see what's happening
+CMD ["python3", "test_ibeam.py"]
