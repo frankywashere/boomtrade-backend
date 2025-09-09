@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: boomtrade-backend
+    runtime: docker
+    repo: https://github.com/YOUR_USERNAME/boomtrade-backend
+    branch: main
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: PYTHON_ENV
+        value: production
+    buildCommand: docker build -t boomtrade-backend .
+    startCommand: python main.py
+    healthCheckPath: /health
+    plan: free  # Can upgrade to "starter" ($7/month) for no spin-down
