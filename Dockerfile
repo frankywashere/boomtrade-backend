@@ -47,7 +47,7 @@ stderr_logfile=/tmp/fastapi.err.log\n\
 stdout_logfile=/tmp/fastapi.out.log\n\
 startsecs=10' > /etc/supervisor/conf.d/supervisord.conf
 
-EXPOSE 8000 5000
+EXPOSE 10000 5000
 
 # Use supervisor to run both processes
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

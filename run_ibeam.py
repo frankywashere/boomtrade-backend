@@ -5,51 +5,65 @@ Direct IBeam runner that imports and starts IBeam
 import os
 import sys
 import time
+import logging
 
-# Set environment from Docker env vars
-os.environ['IBEAM_ACCOUNT'] = os.getenv('IBEAM_ACCOUNT', '')
-os.environ['IBEAM_PASSWORD'] = os.getenv('IBEAM_PASSWORD', '')
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-print("=== STARTING IBEAM DIRECTLY ===")
-print(f"Account: {os.environ.get('IBEAM_ACCOUNT', 'Not set')}")
+# Get credentials from environment
+account = os.getenv('IBEAM_ACCOUNT', '')
+password = os.getenv('IBEAM_PASSWORD', '')
+
+logger.info("=== IBEAM STARTUP ===")
+logger.info(f"Account configured: {'Yes' if account else 'No'}")
+logger.info(f"Password configured: {'Yes' if password else 'No'}")
+
+# If no credentials, just exit gracefully
+if not account or not password:
+    logger.warning("No IBKR credentials configured. IBeam will not start.")
+    logger.warning("Set IBEAM_ACCOUNT and IBEAM_PASSWORD environment variables in Render.")
+    # Exit with 0 to prevent supervisor from retrying
+    sys.exit(0)
 
 try:
     from ibeam import IBeam
-    
-    print("✅ IBeam module imported successfully")
+    logger.info("✅ IBeam module imported successfully")
     
     # Initialize IBeam
+    logger.info("Initializing IBeam...")
     ib = IBeam(
-        account=os.environ.get('IBEAM_ACCOUNT'),
-        password=os.environ.get('IBEAM_PASSWORD'),
+        account=account,
+        password=password,
         gateway_dir='/tmp/gateway',
         cache_dir='/tmp/cache'
     )
     
-    print("Starting IBeam authentication...")
+    logger.info("Starting IBeam authentication...")
     
     # Start and authenticate
-    ib.start_and_authenticate()
+    success = ib.start_and_authenticate()
     
-    print("✅ IBeam is running!")
-    
-    # Keep running
-    while True:
-        time.sleep(10)
+    if success:
+        logger.info("✅ IBeam authentication successful!")
+        # Keep running
+        while True:
+            time.sleep(30)
+            logger.debug("IBeam heartbeat...")
+    else:
+        logger.error("❌ IBeam authentication failed")
+        sys.exit(0)
         
 except ImportError as e:
-    print(f"❌ Failed to import IBeam: {e}")
-    print("Trying alternative approach...")
-    
-    # Try to run IBeam CLI directly
-    import subprocess
-    result = subprocess.run(
-        ["python3", "-m", "ibeam", "gateway", "start"],
-        env=os.environ.copy()
-    )
+    logger.error(f"❌ Failed to import IBeam: {e}")
+    logger.info("IBeam not properly installed. Running without IBeam.")
+    sys.exit(0)
     
 except Exception as e:
-    print(f"❌ Error starting IBeam: {e}")
+    logger.error(f"❌ Error starting IBeam: {e}")
     import traceback
     traceback.print_exc()
-    sys.exit(1)
+    sys.exit(0)

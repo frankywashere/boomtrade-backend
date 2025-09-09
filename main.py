@@ -165,6 +165,7 @@ async def get_positions():
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8000))
+    # Render provides PORT env var, default to 10000 for Render
+    port = int(os.environ.get("PORT", 10000))
     print(f"Starting server on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
