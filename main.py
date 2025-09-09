@@ -105,14 +105,29 @@ IBEAM_PASSWORD={credentials.password}
         
         # Launch IBeam
         print("Launching IBeam process...")
-        gateway_process = subprocess.Popen(
-            ["python", "-m", "ibeam", "gateway", "start", "--config", "ibeam_config.yml"],
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
+        try:
+            gateway_process = subprocess.Popen(
+                ["python", "-m", "ibeam", "gateway", "start", "--config", "ibeam_config.yml"],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            print(f"IBeam process started with PID: {gateway_process.pid}")
+            
+            # Check if process started successfully
+            import time
+            time.sleep(1)  # Give it a second to start
+            if gateway_process.poll() is not None:
+                stdout, stderr = gateway_process.communicate()
+                print(f"IBeam failed to start!")
+                print(f"STDOUT: {stdout.decode()}")
+                print(f"STDERR: {stderr.decode()}")
+                return {"status": "error", "message": "IBeam failed to start"}
+                
+        except Exception as e:
+            print(f"Failed to launch IBeam: {str(e)}")
+            return {"status": "error", "message": f"Failed to launch IBeam: {str(e)}"}
         
-        print(f"IBeam process started with PID: {gateway_process.pid}")
         print("Waiting for gateway to initialize...")
         
         # Wait for gateway to be ready
@@ -139,9 +154,12 @@ IBEAM_PASSWORD={credentials.password}
                     else:
                         print(f"Gateway returned status {response.status_code}, attempt {i+1}/{max_attempts}")
             except Exception as e:
-                print(f"Gateway not responding yet ({i+1}/{max_attempts}): {str(e)}")
+                print(f"[{datetime.now().strftime('%H:%M:%S.%f')}] Gateway not responding yet ({i+1}/{max_attempts}): {str(e)}")
             
+            # CRITICAL: Must await the sleep!
+            print(f"Sleeping for 2 seconds...")
             await asyncio.sleep(2)
+            print(f"Woke up, continuing...")
         
         return {"status": "timeout", "message": "Gateway startup timeout. Please check your credentials."}
         
